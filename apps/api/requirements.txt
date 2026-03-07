@@ -1,0 +1,5 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+google-cloud-bigquery==3.31.0
+pydantic-settings==2.8.1
+python-dotenv==1.0.1

@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+
+  airflow-init:
+    image: apache/airflow:2.10.3-python3.11
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: "${AIRFLOW_UID:-50000}:0"
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: UTC
+      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-google-cloud-bigquery==3.25.0}
+      BQ_PROJECT: ${BQ_PROJECT}
+      BQ_DATASET_RAW: ${BQ_DATASET_RAW:-kalshi_raw}
+      BQ_DATASET_STG: ${BQ_DATASET_STG:-kalshi_stg}
+      BQ_DATASET_CORE: ${BQ_DATASET_CORE:-kalshi_core}
+      BQ_DATASET_OPS: ${BQ_DATASET_OPS:-kalshi_ops}
+      KALSHI_API_BASE_URL: ${KALSHI_API_BASE_URL:-https://api.elections.kalshi.com/trade-api/v2}
+      KALSHI_USAGE_TIER: ${KALSHI_USAGE_TIER:-basic}
+      KALSHI_MARKET_STATUS: ${KALSHI_MARKET_STATUS:-open}
+      KALSHI_SERIES_TICKER: ${KALSHI_SERIES_TICKER:-}
+      KALSHI_READ_RPS: ${KALSHI_READ_RPS:-5}
+      KALSHI_MAX_TIER_READ_RPS: ${KALSHI_MAX_TIER_READ_RPS:-20}
+      KALSHI_MAX_REQUESTS_PER_RUN: ${KALSHI_MAX_REQUESTS_PER_RUN:-120}
+      KALSHI_MAX_MARKET_PAGES: ${KALSHI_MAX_MARKET_PAGES:-6}
+      KALSHI_MAX_TRADE_PAGES: ${KALSHI_MAX_TRADE_PAGES:-4}
+      KALSHI_MAX_ORDERBOOK_MARKETS: ${KALSHI_MAX_ORDERBOOK_MARKETS:-25}
+      KALSHI_MARKET_PAGE_LIMIT: ${KALSHI_MARKET_PAGE_LIMIT:-100}
+      KALSHI_TRADE_PAGE_LIMIT: ${KALSHI_TRADE_PAGE_LIMIT:-100}
+      KALSHI_ORDERBOOK_DEPTH: ${KALSHI_ORDERBOOK_DEPTH:-10}
+      KALSHI_TRADE_LOOKBACK_MINUTES: ${KALSHI_TRADE_LOOKBACK_MINUTES:-30}
+      KALSHI_429_RETRY_DELAY_SECONDS: ${KALSHI_429_RETRY_DELAY_SECONDS:-2}
+      QUALITY_MAX_FRESHNESS_MINUTES: ${QUALITY_MAX_FRESHNESS_MINUTES:-15}
+      QUALITY_MAX_NULL_MARKET_TICKER_RATIO: ${QUALITY_MAX_NULL_MARKET_TICKER_RATIO:-0.01}
+      QUALITY_MAX_DUPLICATE_TRADE_ID_RATIO: ${QUALITY_MAX_DUPLICATE_TRADE_ID_RATIO:-0.01}
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/keys/credentials.json
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create --username ${AIRFLOW_USERNAME:-airflow} --password ${AIRFLOW_PASSWORD:-airflow} --firstname Air --lastname Flow --role Admin --email airflow@example.com || true
+      "
+    volumes: &airflow-volumes
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/config:/opt/airflow/config
+      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST:-./credentials_brainrot.json}:/opt/airflow/keys/credentials.json:ro
+
+  airflow-webserver:
+    image: apache/airflow:2.10.3-python3.11
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    user: "${AIRFLOW_UID:-50000}:0"
+    environment: *airflow-env
+    command: webserver
+    ports:
+      - "8080:8080"
+    volumes: *airflow-volumes
+
+  airflow-scheduler:
+    image: apache/airflow:2.10.3-python3.11
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    user: "${AIRFLOW_UID:-50000}:0"
+    environment: *airflow-env
+    command: scheduler
+    volumes: *airflow-volumes
+
+volumes:
+  airflow_postgres_data:

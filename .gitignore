@@ -1,0 +1,19 @@
+# Local env files
+.env
+.env.*
+!.env.kalshi.local.example
+!.env.airflow.local.example
+
+# Local service-account keys
+credentials*.json
+
+# Airflow local state
+airflow/logs/
+airflow/config/
+airflow/plugins/
+__pycache__/
+
+# App runtime artifacts
+apps/ui/node_modules/
+apps/ui/dist/
+apps/api/.venv/
