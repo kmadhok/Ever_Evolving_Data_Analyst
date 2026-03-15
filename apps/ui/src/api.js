@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 async function parseJson(response) {
   if (!response.ok) {
@@ -35,5 +35,75 @@ export async function fetchProposals(dashboardId) {
   const res = await fetch(
     `${API_BASE}/v1/agent/proposals?dashboard_id=${encodeURIComponent(dashboardId)}&persist=true`
   );
+  return parseJson(res);
+}
+
+export async function fetchSignalFeed(filters = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== '') {
+      params.set(key, String(value));
+    }
+  });
+  const res = await fetch(`${API_BASE}/v1/signals/feed?${params.toString()}`);
+  return parseJson(res);
+}
+
+export async function fetchGovernanceProposals(dashboardId, limit = 20) {
+  const params = new URLSearchParams({ dashboard_id: dashboardId, limit: String(limit) });
+  const res = await fetch(`${API_BASE}/v1/governance/proposals?${params.toString()}`);
+  return parseJson(res);
+}
+
+export async function decideGovernanceProposal(proposalId, payload) {
+  const res = await fetch(`${API_BASE}/v1/governance/proposals/${encodeURIComponent(proposalId)}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
+export async function fetchGovernanceSummary(dashboardId) {
+  const params = new URLSearchParams({ dashboard_id: dashboardId });
+  const res = await fetch(`${API_BASE}/v1/governance/summary?${params.toString()}`);
+  return parseJson(res);
+}
+
+export async function fetchSpecVersions(dashboardId, limit = 20) {
+  const params = new URLSearchParams({ dashboard_id: dashboardId, limit: String(limit) });
+  const res = await fetch(`${API_BASE}/v1/governance/spec-versions?${params.toString()}`);
+  return parseJson(res);
+}
+
+export async function runAutonomyCycle(dashboardId) {
+  const params = new URLSearchParams({ dashboard_id: dashboardId });
+  const res = await fetch(`${API_BASE}/v1/governance/run?${params.toString()}`, {
+    method: 'POST',
+  });
+  return parseJson(res);
+}
+
+export async function applyProposal(payload) {
+  const res = await fetch(`${API_BASE}/v1/governance/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
+export async function rollbackSpec(payload) {
+  const res = await fetch(`${API_BASE}/v1/governance/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
+export async function fetchLiveValidation(dashboardId) {
+  const params = new URLSearchParams({ dashboard_id: dashboardId });
+  const res = await fetch(`${API_BASE}/v1/governance/summary?${params.toString()}`);
   return parseJson(res);
 }

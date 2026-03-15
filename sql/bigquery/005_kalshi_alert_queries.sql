@@ -63,3 +63,19 @@ SELECT
   0.5 AS threshold_value,
   CURRENT_TIMESTAMP() AS checked_at
 FROM windows;
+
+-- ALERT 6: Stale signal run (> 15 minutes).
+SELECT
+  "stale_signal_run" AS alert_name,
+  CASE
+    WHEN minutes_since_latest_signal_run > 15 THEN "TRIGGER"
+    ELSE "OK"
+  END AS alert_status,
+  minutes_since_latest_signal_run AS observed_value,
+  15 AS threshold_value,
+  CURRENT_TIMESTAMP() AS checked_at
+FROM (
+  SELECT
+    IFNULL(TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(run_ts), MINUTE), 1e9) AS minutes_since_latest_signal_run
+  FROM `brainrot-453319.kalshi_ops.signal_runs`
+);

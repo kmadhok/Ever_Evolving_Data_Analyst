@@ -27,14 +27,23 @@
 - `/de`: pipeline reliability, freshness, quality, ingestion cadence.
 - `/analyst`: market activity, flow, and short-horizon movers.
 - `/ds`: feature drift, label coverage, retrain-priority signals.
+- `/ops`: operator console for governed proposal history, spec versions, decisions, apply, and rollback.
 
 ## Core API endpoints
 
 - `GET /v1/dashboard/spec?role=de|analyst|ds`
 - `POST /v1/dashboard/spec`
+- `POST /v1/dashboard/spec/validate`
 - `GET /v1/dashboard/tile/{tile_id}`
 - `POST /v1/usage/events`
 - `GET /v1/agent/proposals`
+- `GET /v1/governance/proposals`
+- `POST /v1/governance/proposals/{proposal_id}/decision`
+- `GET /v1/governance/spec-versions`
+- `GET /v1/governance/summary`
+- `POST /v1/governance/run`
+- `POST /v1/governance/apply`
+- `POST /v1/governance/rollback`
 
 ## BigQuery app tables
 
@@ -42,6 +51,50 @@
 - `kalshi_ops.agent_proposals`
 - `kalshi_ops.agent_decisions`
 - `kalshi_core.dashboard_events` (already used for usage telemetry)
+
+## Governance state machine
+
+- Proposal statuses:
+  - `proposed`
+  - `decided`
+  - `applied`
+  - `rejected`
+  - `failed`
+  - `rolled_back`
+- Allowed status transitions:
+  - `proposed -> decided`
+  - `proposed -> failed`
+  - `decided -> applied`
+  - `decided -> rejected`
+  - `decided -> failed`
+  - `applied -> rolled_back`
+  - `applied -> failed`
+- Decision values:
+  - `approve_auto`
+  - `approve_manual`
+  - `reject`
+  - `needs_review`
+
+## Governance payload contract
+
+- `agent_proposals.proposal_json` is the authoritative machine-readable payload.
+- Proposal payload includes:
+  - `risk_level`
+  - `policy_version`
+  - `source_signals`
+  - `spec_diff`
+  - `idempotency_key`
+- `agent_proposals` table columns act as query/index fields for:
+  - `status`
+  - `risk_level`
+  - `policy_version`
+  - `idempotency_key`
+- `agent_decisions` records include:
+  - `decision`
+  - `decided_by`
+  - `decision_reason`
+  - `policy_version`
+  - `candidate_version_id`
 
 ## Human-readable context model
 

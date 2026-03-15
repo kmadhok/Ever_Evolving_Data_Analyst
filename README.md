@@ -1,132 +1,181 @@
-# Ever Evolving Software - Market Data v0 Scaffold
+# Ever Evolving Software
 
-This repo contains starter scaffolds for autonomous market-data analytics:
+Live-operable beta workspace for:
+- Kalshi market ingestion and signal reporting
+- Odds API ingestion with credit-aware budgeting
+- FastAPI governance services for dashboard spec autonomy
+- React role-based dashboards and operator console
 
-- `docs/odds_autonomy_v0_prd.md`: Odds API free-tier optimized PRD.
-- `docs/kalshi_autonomy_v0_prd.md`: Kalshi-first PRD (rate-limit aware).
-- `sql/bigquery/001_baseline_tables.sql`: baseline BigQuery schemas/tables.
-- `sql/bigquery/002_kalshi_baseline_tables.sql`: Kalshi-first baseline BigQuery schemas/tables.
-- `sql/bigquery/003_kalshi_dashboard_tiles.sql`: starter dashboard tile queries for pipeline health, markets, trades, and orderbook views.
-- `sql/bigquery/004_kalshi_dashboard_views.sql`: creates reusable BigQuery views in `kalshi_dash` for BI dashboards.
-- `sql/bigquery/005_kalshi_alert_queries.sql`: starter alert query templates for freshness, quality, and throughput.
-- `sql/bigquery/006_kalshi_autonomy_app_tables.sql`: app autonomy tables for dashboard spec versions and agent proposals.
-- `sql/bigquery/007_kalshi_ds_views.sql`: DS-focused BigQuery views for drift, coverage, and retrain-priority signals.
-- `sql/bigquery/008_kalshi_event_ingestion_tables.sql`: raw/staging/core event-entity tables for human-readable market context.
-- `docs/kalshi_dashboard_v0_looker_plan.md`: Looker Studio build plan with chart-to-view mapping.
-- `docs/kalshi_autonomous_app_architecture.md`: FastAPI + React autonomy architecture and data flow.
-- `apps/api`: FastAPI backend serving spec-driven dashboard and agent-proposal endpoints.
-- `apps/ui`: React frontend that renders tiles dynamically from API spec.
-- `airflow/dags/odds_api_autonomous_de_v0.py`: Airflow DAG skeleton with credit-aware branch control and bounded DE autonomy.
-- `airflow/dags/kalshi_market_data_autonomous_de_v0.py`: Airflow DAG skeleton with rate-limit aware branch control and bounded DE autonomy.
-- `docker-compose.airflow.yml`: easiest local Airflow stack (webserver + scheduler + postgres).
-- `.env.airflow.local.example`: local env template for Airflow Docker.
-- `Makefile`: helper commands (`airflow-init`, `airflow-up`, `airflow-down`, `airflow-logs`).
+## What Lives Here
 
-## Recommended Primary DAG
-- Use `kalshi_market_data_autonomous_de_v0` as primary.
-- Keep `odds_api_autonomous_de_v0` as optional companion source on lower cadence.
+- `airflow/dags/kalshi_market_data_autonomous_de_v0.py`
+  Primary Kalshi ingestion DAG. Persists raw/staging/core data, quality results, signal runs, market-intelligence reports, and governed schema-review records.
+- `airflow/dags/odds_api_autonomous_de_v0.py`
+  Companion Odds API DAG. Persists budget decisions, raw payloads, staging/core tables, quality results, schema-review records, and run summaries.
+- `apps/api`
+  FastAPI backend for spec serving, usage logging, proposal generation, governance decisions, apply, rollback, CLI operations, and live validation.
+- `apps/ui`
+  Vite/React UI for `/de`, `/analyst`, `/ds`, `/consumer`, and `/ops`.
+- `sql/bigquery`
+  Ordered SQL source of truth for datasets, tables, views, and reporting assets.
+- `scripts`
+  Repo-level helpers for env checks, BigQuery apply flows, live validation, and local Airflow DAG triggers.
 
-## Easiest Airflow Setup (Local Docker)
-1. Create your local env file:
-   - `cp .env.airflow.local.example .env.airflow.local`
-2. Confirm these values in `.env.airflow.local`:
-   - `BQ_PROJECT=brainrot-453319`
-   - `GOOGLE_APPLICATION_CREDENTIALS_HOST=./credentials_brainrot.json`
-3. Initialize Airflow DB and admin user:
-   - `make airflow-init`
-4. Start scheduler + webserver:
-   - `make airflow-up`
-5. Open Airflow UI:
-   - `http://localhost:8080` (default user/password: `airflow`/`airflow`)
-6. In the UI, unpause and trigger:
-   - `kalshi_market_data_autonomous_de_v0`
+## Quick Start
 
-## Next Setup Steps
-1. Replace `YOUR_PROJECT_ID` in both SQL files.
-2. Apply DDL in BigQuery.
-3. Configure Airflow environment variables for the DAG you run.
+### 1. Backend
 
-BigQuery format note:
-   - `BQ_PROJECT` must be project id only (example: `brainrot-453319`), not `project.dataset`.
+```bash
+cd /Users/kanumadhok/Downloads/code/Ever_Evolving_Software/apps/api
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
 
-Odds DAG variables:
-   - `ODDS_API_KEY`
-   - `TARGET_SPORT` (example: `basketball_nba`)
-   - `TARGET_REGIONS` (example: `us`)
-   - `TARGET_MARKETS` (example: `h2h`)
-   - `BQ_PROJECT`
-   - `MONTHLY_CREDIT_CAP` (default `500`)
-   - `CREDIT_RESERVE` (default `25`)
-   - `MAX_PAID_CYCLES_PER_DAY` (default `8`)
-   - `ENABLE_SCORES_FETCH` (default `true`)
+Run the local backend:
 
-Kalshi DAG variables:
-   - `KALSHI_API_BASE_URL` (default `https://api.elections.kalshi.com/trade-api/v2`)
-   - `KALSHI_USAGE_TIER` (default `basic`)
-   - `KALSHI_READ_RPS` (default `5`)
-   - `KALSHI_MAX_TIER_READ_RPS` (default `20`)
-   - `KALSHI_MAX_REQUESTS_PER_RUN` (default `120`)
-   - `KALSHI_MAX_EVENT_PAGES` (default `60`, used as targeted event-detail call budget)
-   - `KALSHI_EVENT_BACKFILL_MAX_EVENTS` (default `20`, max events hydrated per run from recent trade demand)
-   - `KALSHI_EVENT_BACKFILL_LOOKBACK_HOURS` (default `24`, candidate window for hydration)
-   - `KALSHI_MARKET_STATUS` (default `open`)
-   - `KALSHI_SERIES_TICKER` (optional filter)
-   - `KALSHI_429_RETRY_DELAY_SECONDS` (default `2`)
-   - `QUALITY_MAX_FRESHNESS_MINUTES` (default `15`)
-   - `QUALITY_MAX_NULL_MARKET_TICKER_RATIO` (default `0.01`)
-   - `QUALITY_MAX_DUPLICATE_TRADE_ID_RATIO` (default `0.01`)
-   - `BQ_PROJECT`
-   - `GOOGLE_APPLICATION_CREDENTIALS` (path to service-account json for local runs)
+```bash
+make api-dev
+```
 
-4. Run the Kalshi DAG; remaining TODOs are non-essential v0 items (agent schema proposals and external alert sink).
+Run backend unit tests:
 
-## Config Placement
-- Local/dev: `.env` is fine and commonly easiest.
-- Airflow/prod: use Airflow Variables/Connections and secret manager (not checked-in `.env` files).
-- Starter local template: `.env.kalshi.local.example`.
-- Airflow Docker local template: `.env.airflow.local.example`.
+```bash
+make api-test-unit
+```
 
-## Free Tier Behavior
-- DAG runs hourly but does a no-cost quota heartbeat first (`/sports/`).
-- Paid pulls are executed only in computed UTC paid slots.
-- When credits are tight, policy downgrades to odds-only (skips scores).
+### 2. Frontend
 
-## Kalshi Behavior
-- DAG runs every 5 minutes and enforces conservative read RPS.
-- Uses cursor pagination for markets/trades and capped orderbook pulls.
-- Fetches targeted event metadata using `/events/{event_ticker}` for ingested markets.
-- Runs event-title hydration backfill from high-volume recent trade events.
-- Uses dollar/fixed-point fields in staging/core (cent fields removed in recent API versions).
+```bash
+cd /Users/kanumadhok/Downloads/code/Ever_Evolving_Software/apps/ui
+npm install
+```
 
-## v0 Safety Model
-- Only additive low-risk schema changes may auto-apply.
-- Core table breaking changes remain blocked.
-- Quality gates run before any autonomous schema action.
+Run the local frontend:
 
-## Autonomous App Stack (FastAPI + React)
-This stack removes manual BI-layout dependency and enables spec-driven evolution.
+```bash
+make ui-dev
+```
 
-1. Apply app autonomy tables:
-   - `sql/bigquery/006_kalshi_autonomy_app_tables.sql`
-2. Start API:
-   - `cd /Users/kanumadhok/Downloads/code/Ever_Evolving_Software/apps/api`
-   - `python3 -m venv .venv && source .venv/bin/activate`
-   - `pip install -r requirements.txt`
-   - `cp .env.example .env`
-   - `export GOOGLE_APPLICATION_CREDENTIALS=/Users/kanumadhok/Downloads/code/Ever_Evolving_Software/credentials_brainrot.json`
-   - `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
-3. Start UI:
-   - `cd /Users/kanumadhok/Downloads/code/Ever_Evolving_Software/apps/ui`
-   - `npm install`
-   - `VITE_API_BASE_URL=http://localhost:8000 npm run dev`
-   - Open role views:
-     - `http://localhost:5173/de`
-     - `http://localhost:5173/analyst`
-     - `http://localhost:5173/ds`
+Run frontend validation:
 
-Autonomy loop path:
-- UI usage events -> `kalshi_core.dashboard_events`
-- Agent proposals -> `kalshi_ops.agent_proposals`
-- Active dashboard spec -> `kalshi_ops.dashboard_spec_versions`
-- API always serves latest active spec (fallback default if missing)
-- Role routes -> `/de`, `/analyst`, `/ds` (role-filtered spec from API)
+```bash
+make ui-test
+make ui-build
+make ui-e2e
+```
+
+### 3. Repo-Level Checks
+
+```bash
+make env-check
+```
+
+This checks:
+- API settings and credential discovery
+- Node.js availability
+- npm availability
+
+### 4. BigQuery SQL Apply
+
+Apply SQL groups in order:
+
+```bash
+make bq-apply-kalshi-core PROJECT_ID=brainrot-453319
+make bq-apply-kalshi-signals PROJECT_ID=brainrot-453319
+make bq-apply-odds-core PROJECT_ID=brainrot-453319
+```
+
+Run live BigQuery smoke validation:
+
+```bash
+make api-test-live DASHBOARD_ID=kalshi_autonomous_v1
+```
+
+### 5. Airflow
+
+```bash
+make airflow-init
+make airflow-up
+make airflow-trigger-kalshi
+make airflow-trigger-odds
+```
+
+## Key Commands
+
+- `make api-test-unit`
+  Runs backend `unittest` coverage for policy, diffing, apply/rollback, CLI, and live-validation helpers.
+- `make api-test-live`
+  Runs live BigQuery validation through `python -m app.cli validate-live`.
+- `make ui-test`
+  Runs Vitest component tests.
+- `make ui-e2e`
+  Runs Playwright smoke coverage across the main role routes.
+- `make bq-apply-kalshi-core`
+  Applies Kalshi core/dashboard/autonomy SQL in dependency order.
+- `make bq-apply-kalshi-signals`
+  Applies Kalshi signal and reporting SQL in dependency order.
+- `make bq-apply-odds-core`
+  Applies Odds baseline datasets/tables.
+
+## Backend Interfaces
+
+Stable API endpoints:
+- `GET /health`
+- `GET /v1/dashboard/spec`
+- `POST /v1/dashboard/spec`
+- `POST /v1/dashboard/spec/validate`
+- `GET /v1/dashboard/tile/{tile_id}`
+- `GET /v1/signals/feed`
+- `POST /v1/usage/events`
+- `GET /v1/agent/proposals`
+- `GET /v1/governance/proposals`
+- `POST /v1/governance/proposals/{proposal_id}/decision`
+- `GET /v1/governance/spec-versions`
+- `GET /v1/governance/summary`
+- `POST /v1/governance/run`
+- `POST /v1/governance/apply`
+- `POST /v1/governance/rollback`
+
+CLI entrypoints:
+- `python -m app.cli env-check`
+- `python -m app.cli validate-live`
+- `python -m app.cli governance-run`
+- `python -m app.cli governance-summary`
+
+## Dashboard Routes
+
+- `/de`
+- `/analyst`
+- `/ds`
+- `/consumer`
+- `/ops`
+
+The operator console shows:
+- active and previous spec versions
+- proposal backlog and decision counts
+- last autonomy run timestamp
+- last successful live validation timestamp
+- API base and spec source metadata
+
+## Documentation Map
+
+- `docs/commands_and_scripts.md`
+  Inventory of every Make target, helper script, CLI command, and test entrypoint.
+- `docs/local_and_live_validation.md`
+  Exact local checks versus live-environment checks.
+- `docs/environment_model.md`
+  Single-project environment model, credentials, and expected variables.
+- `docs/data_assets_reference.md`
+  DAG, SQL, dataset, and reporting asset catalog.
+- `docs/governance_operator_runbook.md`
+  How to run the operator workflow end to end.
+- `docs/bigquery_apply_order.md`
+  Exact SQL apply order and what each group changes.
+
+## Known Limits
+
+- Live BigQuery correctness still depends on your real datasets, permissions, and upstream freshness.
+- External API quota behavior is instrumented and bounded in code, but actual Kalshi/Odds provider behavior still needs live observation.
+- The backend currently runs under the existing local Python 3.9 environment, which emits upstream deprecation warnings. The repo still works, but upgrading the runtime is recommended.

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     gcp_project_id: str = "brainrot-453319"
     bq_dash_dataset: str = "kalshi_dash"
+    bq_signal_dataset: str = "kalshi_signal"
     bq_ops_dataset: str = "kalshi_ops"
     bq_core_dataset: str = "kalshi_core"
 

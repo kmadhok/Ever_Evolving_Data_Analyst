@@ -243,6 +243,327 @@ SELECT
 FROM book
 GROUP BY market_ticker;
 
+CREATE OR REPLACE VIEW `brainrot-453319.kalshi_dash.vw_simple_side_summary_24h` AS
+WITH latest_market_map AS (
+  SELECT
+    market_ticker, event_ticker
+  FROM `brainrot-453319.kalshi_core.market_state_core`
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY market_ticker
+    ORDER BY snapshot_ts DESC, ingestion_date DESC, close_time DESC, event_ticker DESC
+  ) = 1
+),
+events_latest AS (
+  SELECT event_ticker, title, sub_title
+  FROM `brainrot-453319.kalshi_core.events_dim`
+),
+latest_trade AS (
+  SELECT
+    market_ticker,
+    created_time AS last_trade_ts,
+    COALESCE(yes_price_dollars, 0) AS latest_contract_price
+  FROM `brainrot-453319.kalshi_core.trade_prints_core`
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY market_ticker ORDER BY created_time DESC) = 1
+),
+trade_24h AS (
+  SELECT
+    market_ticker,
+    COUNT(*) AS trades_24h,
+    SUM(COALESCE(count_contracts, 0)) AS contracts_24h,
+    AVG(COALESCE(yes_price_dollars, 0)) AS avg_contract_price_24h,
+    SUM(COALESCE(count_contracts, 0) * COALESCE(yes_price_dollars, 0)) AS notional_traded_24h
+  FROM `brainrot-453319.kalshi_core.trade_prints_core`
+  WHERE created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+  GROUP BY market_ticker
+),
+base AS (
+  SELECT
+    t.market_ticker,
+    COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')) AS event_key,
+    COALESCE(e.title, COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', ''))) AS event_title,
+    e.sub_title AS event_sub_title,
+    REGEXP_EXTRACT(t.market_ticker, r'([^-]+)$') AS side_label,
+    lt.latest_contract_price,
+    lt.last_trade_ts,
+    t.trades_24h,
+    t.contracts_24h,
+    t.avg_contract_price_24h,
+    t.notional_traded_24h
+  FROM trade_24h AS t
+  LEFT JOIN latest_market_map AS m USING (market_ticker)
+  LEFT JOIN latest_trade AS lt USING (market_ticker)
+  LEFT JOIN events_latest AS e
+    ON e.event_ticker = COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', ''))
+  WHERE NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')), 'KXMVECROSSCATEGORY-')
+    AND NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')), 'KXMVESPORTSMULTIGAMEEXTENDED-')
+    AND NOT REGEXP_CONTAINS(COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')), r'(SPREAD|TOTAL|PTS|MOV)')
+),
+scoped AS (
+  SELECT
+    *,
+    COUNT(*) OVER (PARTITION BY event_key) AS side_count,
+    DENSE_RANK() OVER (PARTITION BY event_key ORDER BY latest_contract_price DESC, contracts_24h DESC) AS price_rank
+  FROM base
+)
+SELECT
+  event_title,
+  event_sub_title,
+  side_label,
+  CONCAT(event_title, ' - ', side_label) AS simple_market_label,
+  market_ticker,
+  trades_24h,
+  contracts_24h,
+  ROUND(avg_contract_price_24h, 4) AS avg_contract_price_24h,
+  ROUND(notional_traded_24h, 2) AS notional_traded_24h,
+  ROUND(latest_contract_price, 4) AS latest_contract_price,
+  ROUND(1 - latest_contract_price, 4) AS latest_no_price,
+  CASE
+    WHEN price_rank = 1 THEN 'favorite'
+    WHEN side_count = 2 THEN 'underdog'
+    ELSE 'other'
+  END AS favorite_status,
+  last_trade_ts
+FROM scoped
+WHERE side_count BETWEEN 2 AND 4
+ORDER BY event_title, latest_contract_price DESC, contracts_24h DESC;
+
+CREATE OR REPLACE VIEW `brainrot-453319.kalshi_dash.vw_simple_side_flow_24h` AS
+WITH latest_market_map AS (
+  SELECT
+    market_ticker, event_ticker
+  FROM `brainrot-453319.kalshi_core.market_state_core`
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY market_ticker
+    ORDER BY snapshot_ts DESC, ingestion_date DESC, close_time DESC, event_ticker DESC
+  ) = 1
+),
+events_latest AS (
+  SELECT event_ticker, title
+  FROM `brainrot-453319.kalshi_core.events_dim`
+),
+trade_flow AS (
+  SELECT
+    market_ticker,
+    COUNT(*) AS trades_24h,
+    SUM(CASE WHEN LOWER(COALESCE(taker_side, '')) = 'yes' THEN 1 ELSE 0 END) AS yes_trade_count_24h,
+    SUM(CASE WHEN LOWER(COALESCE(taker_side, '')) = 'no' THEN 1 ELSE 0 END) AS no_trade_count_24h,
+    SUM(COALESCE(count_contracts, 0)) AS contracts_24h,
+    SUM(CASE WHEN LOWER(COALESCE(taker_side, '')) = 'yes' THEN COALESCE(count_contracts, 0) ELSE 0 END)
+      AS yes_contracts_24h,
+    SUM(CASE WHEN LOWER(COALESCE(taker_side, '')) = 'no' THEN COALESCE(count_contracts, 0) ELSE 0 END)
+      AS no_contracts_24h
+  FROM `brainrot-453319.kalshi_core.trade_prints_core`
+  WHERE created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+  GROUP BY market_ticker
+),
+base AS (
+  SELECT
+    COALESCE(e.title, COALESCE(m.event_ticker, REGEXP_REPLACE(f.market_ticker, r'-[^-]+$', ''))) AS event_title,
+    REGEXP_EXTRACT(f.market_ticker, r'([^-]+)$') AS side_label,
+    f.market_ticker,
+    f.trades_24h,
+    f.contracts_24h,
+    f.yes_trade_count_24h,
+    f.no_trade_count_24h,
+    f.yes_contracts_24h,
+    f.no_contracts_24h
+  FROM trade_flow AS f
+  LEFT JOIN latest_market_map AS m USING (market_ticker)
+  LEFT JOIN events_latest AS e
+    ON e.event_ticker = COALESCE(m.event_ticker, REGEXP_REPLACE(f.market_ticker, r'-[^-]+$', ''))
+  WHERE NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(f.market_ticker, r'-[^-]+$', '')), 'KXMVECROSSCATEGORY-')
+    AND NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(f.market_ticker, r'-[^-]+$', '')), 'KXMVESPORTSMULTIGAMEEXTENDED-')
+    AND NOT REGEXP_CONTAINS(COALESCE(m.event_ticker, REGEXP_REPLACE(f.market_ticker, r'-[^-]+$', '')), r'(SPREAD|TOTAL|PTS|MOV)')
+),
+scoped AS (
+  SELECT
+    *,
+    COUNT(*) OVER (PARTITION BY event_title) AS side_count
+  FROM base
+)
+SELECT
+  event_title,
+  side_label,
+  CONCAT(event_title, ' - ', side_label) AS simple_market_label,
+  market_ticker,
+  trades_24h,
+  contracts_24h,
+  yes_trade_count_24h,
+  no_trade_count_24h,
+  yes_contracts_24h,
+  no_contracts_24h,
+  CASE
+    WHEN yes_contracts_24h > no_contracts_24h THEN 'more buying YES'
+    WHEN no_contracts_24h > yes_contracts_24h THEN 'more selling / NO'
+    ELSE 'balanced'
+  END AS simple_flow_read
+FROM scoped
+WHERE side_count BETWEEN 2 AND 4
+ORDER BY event_title, contracts_24h DESC;
+
+CREATE OR REPLACE VIEW `brainrot-453319.kalshi_dash.vw_simple_side_price_trend_24h` AS
+WITH latest_market_map AS (
+  SELECT
+    market_ticker, event_ticker
+  FROM `brainrot-453319.kalshi_core.market_state_core`
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY market_ticker
+    ORDER BY snapshot_ts DESC, ingestion_date DESC, close_time DESC, event_ticker DESC
+  ) = 1
+),
+events_latest AS (
+  SELECT event_ticker, title
+  FROM `brainrot-453319.kalshi_core.events_dim`
+),
+hourly AS (
+  SELECT
+    t.market_ticker,
+    TIMESTAMP_TRUNC(t.created_time, HOUR) AS hour_ts,
+    ARRAY_AGG(COALESCE(t.yes_price_dollars, 0) ORDER BY t.created_time DESC LIMIT 1)[OFFSET(0)]
+      AS last_contract_price,
+    COUNT(*) AS trades_in_hour,
+    SUM(COALESCE(t.count_contracts, 0)) AS contracts_in_hour
+  FROM `brainrot-453319.kalshi_core.trade_prints_core` AS t
+  WHERE t.created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+  GROUP BY t.market_ticker, hour_ts
+),
+event_sides AS (
+  SELECT
+    COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', '')) AS event_key,
+    COUNT(DISTINCT h.market_ticker) AS side_count
+  FROM hourly AS h
+  LEFT JOIN latest_market_map AS m USING (market_ticker)
+  GROUP BY event_key
+),
+base AS (
+  SELECT
+    h.hour_ts,
+    COALESCE(e.title, COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', ''))) AS event_title,
+    REGEXP_EXTRACT(h.market_ticker, r'([^-]+)$') AS side_label,
+    CONCAT(
+      COALESCE(e.title, COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', ''))),
+      ' - ',
+      REGEXP_EXTRACT(h.market_ticker, r'([^-]+)$')
+    ) AS simple_market_label,
+    h.market_ticker,
+    h.last_contract_price,
+    h.trades_in_hour,
+    h.contracts_in_hour,
+    s.side_count
+  FROM hourly AS h
+  LEFT JOIN latest_market_map AS m USING (market_ticker)
+  LEFT JOIN event_sides AS s
+    ON s.event_key = COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', ''))
+  LEFT JOIN events_latest AS e
+    ON e.event_ticker = COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', ''))
+  WHERE NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', '')), 'KXMVECROSSCATEGORY-')
+    AND NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', '')), 'KXMVESPORTSMULTIGAMEEXTENDED-')
+    AND NOT REGEXP_CONTAINS(COALESCE(m.event_ticker, REGEXP_REPLACE(h.market_ticker, r'-[^-]+$', '')), r'(SPREAD|TOTAL|PTS|MOV)')
+)
+SELECT
+  hour_ts,
+  event_title,
+  side_label,
+  simple_market_label,
+  market_ticker,
+  ROUND(last_contract_price, 4) AS last_contract_price,
+  trades_in_hour,
+  contracts_in_hour
+FROM base
+WHERE side_count BETWEEN 2 AND 4
+ORDER BY hour_ts DESC, event_title, last_contract_price DESC;
+
+CREATE OR REPLACE VIEW `brainrot-453319.kalshi_dash.vw_consumer_matchup_view` AS
+WITH latest_market_map AS (
+  SELECT
+    market_ticker,
+    event_ticker,
+    status,
+    close_time,
+    last_price_dollars
+  FROM `brainrot-453319.kalshi_core.market_state_core`
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY market_ticker
+    ORDER BY snapshot_ts DESC, ingestion_date DESC, close_time DESC, event_ticker DESC
+  ) = 1
+),
+events_latest AS (
+  SELECT
+    event_ticker,
+    title,
+    sub_title,
+    status
+  FROM `brainrot-453319.kalshi_core.events_dim`
+),
+trade_stats AS (
+  SELECT
+    market_ticker,
+    ARRAY_AGG(COALESCE(yes_price_dollars, 0) ORDER BY created_time ASC LIMIT 1)[OFFSET(0)] AS first_yes_price,
+    ARRAY_AGG(COALESCE(yes_price_dollars, 0) ORDER BY created_time DESC LIMIT 1)[OFFSET(0)] AS latest_yes_price,
+    MIN(COALESCE(yes_price_dollars, 0)) AS min_yes_price,
+    MAX(COALESCE(yes_price_dollars, 0)) AS max_yes_price
+  FROM `brainrot-453319.kalshi_core.trade_prints_core`
+  GROUP BY market_ticker
+),
+base AS (
+  SELECT
+    t.market_ticker,
+    COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')) AS event_key,
+    COALESCE(e.title, COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', ''))) AS event,
+    REGEXP_EXTRACT(t.market_ticker, r'([^-]+)$') AS side,
+    COALESCE(t.latest_yes_price, m.last_price_dollars, 0) AS latest_yes_price,
+    COALESCE(t.first_yes_price, m.last_price_dollars, 0) AS first_yes_price,
+    COALESCE(t.min_yes_price, m.last_price_dollars, 0) AS min_yes_price,
+    COALESCE(t.max_yes_price, m.last_price_dollars, 0) AS max_yes_price,
+    COALESCE(
+      FORMAT_TIMESTAMP('%Y-%m-%d %H:%M UTC', m.close_time),
+      e.sub_title,
+      'not available'
+    ) AS event_time,
+    LOWER(COALESCE(m.status, e.status, '')) AS market_status
+  FROM trade_stats AS t
+  LEFT JOIN latest_market_map AS m USING (market_ticker)
+  LEFT JOIN events_latest AS e
+    ON e.event_ticker = COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', ''))
+  WHERE NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')), 'KXMVECROSSCATEGORY-')
+    AND NOT STARTS_WITH(COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')), 'KXMVESPORTSMULTIGAMEEXTENDED-')
+    AND NOT REGEXP_CONTAINS(COALESCE(m.event_ticker, REGEXP_REPLACE(t.market_ticker, r'-[^-]+$', '')), r'(SPREAD|TOTAL|PTS|MOV)')
+),
+scoped AS (
+  SELECT
+    *,
+    COUNT(*) OVER (PARTITION BY event_key) AS side_count,
+    DENSE_RANK() OVER (PARTITION BY event_key ORDER BY latest_yes_price DESC, max_yes_price DESC) AS price_rank,
+    MAX(
+      IF(
+        market_status NOT IN ('open', 'active')
+        AND latest_yes_price >= 0.99,
+        side,
+        NULL
+      )
+    ) OVER (PARTITION BY event_key) AS resolved_winner
+  FROM base
+)
+SELECT
+  event,
+  side,
+  ROUND(latest_yes_price, 4) AS yes_now,
+  ROUND(1 - latest_yes_price, 4) AS no_now,
+  ROUND(first_yes_price, 4) AS first_value,
+  ROUND(latest_yes_price, 4) AS latest_value,
+  ROUND(min_yes_price, 4) AS min_value,
+  ROUND(max_yes_price, 4) AS max_value,
+  CASE
+    WHEN price_rank = 1 THEN 'favorite'
+    WHEN side_count = 2 THEN 'underdog'
+    ELSE 'other'
+  END AS favorite_or_underdog,
+  event_time,
+  resolved_winner AS result
+FROM scoped
+WHERE side_count BETWEEN 2 AND 4
+ORDER BY event_time ASC, event, latest_value DESC;
+
 CREATE OR REPLACE VIEW `brainrot-453319.kalshi_dash.vw_endpoint_gap_24h` AS
 WITH calls AS (
   SELECT

@@ -202,3 +202,12 @@ CREATE TABLE IF NOT EXISTS `YOUR_PROJECT_ID.odds_ops.schema_change_decisions` (
 )
 PARTITION BY DATE(decided_at)
 CLUSTER BY decision;
+
+CREATE TABLE IF NOT EXISTS `YOUR_PROJECT_ID.odds_ops.run_summary` (
+  run_id STRING NOT NULL,
+  run_status STRING NOT NULL,
+  summary_json JSON,
+  emitted_at TIMESTAMP NOT NULL
+)
+PARTITION BY DATE(emitted_at)
+CLUSTER BY run_status;
