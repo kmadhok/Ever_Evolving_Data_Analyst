@@ -25,6 +25,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv()  # read .env file (OPENAI_API_KEY, GOOGLE_APPLICATION_CREDENTIALS, etc.)
+
 from google.cloud import bigquery
 from openai import OpenAI
 from tabulate import tabulate
