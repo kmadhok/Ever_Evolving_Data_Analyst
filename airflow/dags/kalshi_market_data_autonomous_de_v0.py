@@ -71,9 +71,6 @@ QUALITY_MAX_NULL_SIGNAL_ENTITY_COUNT = int(os.getenv("QUALITY_MAX_NULL_SIGNAL_EN
 KALSHI_REPORT_TIMEZONE = os.getenv("KALSHI_REPORT_TIMEZONE", "America/New_York")
 KALSHI_DAILY_REPORT_HOUR = int(os.getenv("KALSHI_DAILY_REPORT_HOUR", "8"))
 KALSHI_DAILY_REPORT_MINUTE = int(os.getenv("KALSHI_DAILY_REPORT_MINUTE", "0"))
-AUTONOMY_DASHBOARD_ID = os.getenv("AUTONOMY_DASHBOARD_ID", "kalshi_autonomous_v1")
-AUTONOMY_ENABLE_AUTO_APPLY = os.getenv("AUTONOMY_ENABLE_AUTO_APPLY", "true").lower() == "true"
-AUTONOMY_ALERT_WEBHOOK_URL = os.getenv("AUTONOMY_ALERT_WEBHOOK_URL", "")
 
 
 def _utcnow_iso() -> str:
@@ -151,31 +148,6 @@ def _json_cell(value: Any) -> str:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def _import_autonomy_modules():
-    root = _repo_root()
-    if str(root) not in sys.path:
-        sys.path.append(str(root))
-    from apps.api.app.autonomy_service import run_autonomy_cycle
-    from apps.api.app.config import Settings
-    from apps.api.app.repository import BigQueryRepository
-
-    return Settings, BigQueryRepository, run_autonomy_cycle
-
-
-def _send_alert(payload: dict[str, Any]) -> None:
-    if not AUTONOMY_ALERT_WEBHOOK_URL:
-        return
-    body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
-    request = Request(
-        AUTONOMY_ALERT_WEBHOOK_URL,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urlopen(request, timeout=10) as response:  # noqa: S310 - operator-controlled destination
-        response.read()
 
 
 def _current_local_time() -> datetime:
@@ -1003,75 +975,12 @@ with DAG(
 
     def _branch_quality_gate(ti, **_: Any) -> str:
         quality = ti.xcom_pull(task_ids="run_quality_gates")
-        return "propose_schema_changes" if quality.get("status") == "PASS" else "stop_noop"
+        return "publish_core_tables" if quality.get("status") == "PASS" else "stop_noop"
 
     quality_gate = BranchPythonOperator(
         task_id="quality_gate",
         python_callable=_branch_quality_gate,
     )
-
-    @task(task_id="propose_schema_changes")
-    def propose_schema_changes() -> dict[str, Any]:
-        proposal = {
-            "proposal_id": str(uuid.uuid4()),
-            "status": "NO_CHANGE",
-            "risk_level": "low",
-            "target": f"{BQ_PROJECT}.{BQ_DATASET_STG}.market_snapshots_stg",
-            "proposed_at": _utcnow_iso(),
-        }
-        _insert_rows(
-            BQ_DATASET_OPS,
-            "schema_change_proposals",
-            [
-                {
-                    "proposal_id": proposal["proposal_id"],
-                    "proposed_at": proposal["proposed_at"],
-                    "proposed_by": "kalshi_market_data_autonomous_de_v0",
-                    "target_dataset": BQ_DATASET_STG,
-                    "target_table": "market_snapshots_stg",
-                    "change_type": "no_change",
-                    "change_sql": "-- beta governance records schema drift candidates without auto-applying DDL",
-                    "risk_level": proposal["risk_level"],
-                    "rationale": "Kalshi beta keeps schema evolution in a governed proposal lane.",
-                    "source_doc_hash": None,
-                    "status": proposal["status"],
-                }
-            ],
-        )
-        return proposal
-
-    def _branch_policy_gate(ti, **_: Any) -> str:
-        proposal = ti.xcom_pull(task_ids="propose_schema_changes")
-        if proposal.get("status") == "NO_CHANGE":
-            return "skip_schema_apply"
-        risk = proposal.get("risk_level", "high").lower()
-        return "apply_schema_change" if risk == "low" else "skip_schema_apply"
-
-    policy_gate = BranchPythonOperator(
-        task_id="policy_gate",
-        python_callable=_branch_policy_gate,
-    )
-
-    @task(task_id="apply_schema_change")
-    def apply_schema_change(proposal: dict[str, Any]) -> dict[str, Any]:
-        decided_at = _utcnow_iso()
-        _insert_rows(
-            BQ_DATASET_OPS,
-            "schema_change_decisions",
-            [
-                {
-                    "proposal_id": proposal["proposal_id"],
-                    "decided_at": decided_at,
-                    "decision": "deferred_manual_review",
-                    "decision_reason": "Kalshi beta records schema changes for review but does not auto-apply DDL.",
-                    "decided_by": "system",
-                    "applied_job_id": None,
-                }
-            ],
-        )
-        return {"apply_status": "deferred_manual_review", "applied_at": decided_at}
-
-    skip_schema_apply = EmptyOperator(task_id="skip_schema_apply")
 
     @task(task_id="publish_core_tables", trigger_rule="none_failed_min_one_success")
     def publish_core_tables(stg_summary: dict[str, Any]) -> dict[str, Any]:
@@ -1968,44 +1877,6 @@ with DAG(
 
         return {"run_id": signal_run["run_id"], "status": "PASS", "checks": checks}
 
-    @task(task_id="run_dashboard_autonomy")
-    def run_dashboard_autonomy(signal_quality: dict[str, Any]) -> dict[str, Any]:
-        if signal_quality.get("status") != "PASS":
-            return {"status": "skipped", "reason": "signal_quality_not_passed"}
-        if not AUTONOMY_ENABLE_AUTO_APPLY:
-            return {"status": "skipped", "reason": "auto_apply_disabled"}
-
-        Settings, BigQueryRepository, run_autonomy_cycle = _import_autonomy_modules()
-        settings = Settings(
-            gcp_project_id=BQ_PROJECT,
-            bq_dash_dataset=BQ_DATASET_DASH,
-            bq_signal_dataset=BQ_DATASET_SIGNAL,
-            bq_ops_dataset=BQ_DATASET_OPS,
-            bq_core_dataset=BQ_DATASET_CORE,
-            google_application_credentials=os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-            default_dashboard_id=AUTONOMY_DASHBOARD_ID,
-        )
-        repo = BigQueryRepository(settings)
-        result = run_autonomy_cycle(repo, AUTONOMY_DASHBOARD_ID, mode="airflow_scheduled")
-        result_dict = result.model_dump(mode="json")
-
-        # Alert on rollback or repeated failures
-        if result.failed > 0 or "rollback" in (result.status or ""):
-            _send_alert({
-                "severity": "warning",
-                "type": "autonomy_cycle_failure",
-                "dashboard_id": AUTONOMY_DASHBOARD_ID,
-                "status": result.status,
-                "failed": result.failed,
-                "applied": result.applied,
-                "errors": result.errors[:5],
-                "messages": result.messages[:5],
-                "run_id": result.run_id,
-                "timestamp": _utcnow_iso(),
-            })
-
-        return result_dict
-
     @task(task_id="emit_run_summary")
     def emit_run_summary(
         kpi: dict[str, Any],
@@ -2013,7 +1884,6 @@ with DAG(
         signal_run: dict[str, Any],
         reports_summary: dict[str, Any],
         plan: dict[str, Any],
-        autonomy_run: dict[str, Any],
     ) -> None:
         payload = {
             "run_status": "success",
@@ -2022,11 +1892,8 @@ with DAG(
             "signal_run": signal_run,
             "reports": reports_summary,
             "rate_plan": plan,
-            "autonomy_run": autonomy_run,
         }
         print(payload)
-        if AUTONOMY_ALERT_WEBHOOK_URL and autonomy_run.get("failed", 0) > 0:
-            _send_alert({"severity": "warning", "type": "dashboard_autonomy_failure", **payload})
 
     plan = plan_rate_limits()
     plan_logged = record_rate_limit_plan(plan)
@@ -2040,8 +1907,6 @@ with DAG(
     raw = persist_raw_payloads(plan, events, markets, trades, orderbooks)
     stg = build_staging(raw)
     quality = run_quality_gates(stg)
-    proposal = propose_schema_changes()
-    applied = apply_schema_change(proposal)
     published = publish_core_tables(stg)
     backfill = backfill_event_titles(plan, published)
     post_publish_quality = run_post_publish_quality_checks(published, backfill)
@@ -2049,8 +1914,7 @@ with DAG(
     signal_run = write_signal_run_summary(plan, published, post_publish_quality)
     reports = write_market_intelligence_reports(signal_run, post_publish_quality)
     signal_quality = run_signal_quality_checks(signal_run, reports)
-    autonomy_run = run_dashboard_autonomy(signal_quality)
-    summary = emit_run_summary(kpi, backfill, signal_run, reports, plan, autonomy_run)
+    summary = emit_run_summary(kpi, backfill, signal_run, reports, plan)
 
     start >> plan >> plan_logged >> rate_gate
     rate_gate >> stop_noop >> end
@@ -2058,10 +1922,8 @@ with DAG(
     markets >> orderbook_tickers >> orderbooks
     [events, markets, trades, orderbooks] >> raw >> stg >> quality >> quality_gate
     quality_gate >> stop_noop
-    quality_gate >> proposal >> policy_gate
-    policy_gate >> skip_schema_apply >> published
-    policy_gate >> applied >> published
+    quality_gate >> published
     published >> backfill >> post_publish_quality
     post_publish_quality >> kpi
-    post_publish_quality >> signal_run >> reports >> signal_quality >> autonomy_run >> summary >> end
+    post_publish_quality >> signal_run >> reports >> signal_quality >> summary >> end
     kpi >> summary

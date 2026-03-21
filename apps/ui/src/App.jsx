@@ -1,18 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  API_BASE,
-  applyProposal,
-  decideGovernanceProposal,
-  fetchGovernanceProposals,
-  fetchGovernanceSummary,
   fetchProposals,
   fetchSignalFeed,
   fetchSpec,
-  fetchSpecVersions,
   fetchTile,
   postUsageEvent,
-  rollbackSpec,
-  runAutonomyCycle,
 } from './api';
 
 const DASHBOARD_ID = 'kalshi_autonomous_v1';
@@ -21,7 +13,6 @@ const ROLE_CONFIG = {
   de: { label: 'Data Engineer' },
   analyst: { label: 'Analyst' },
   ds: { label: 'Data Scientist' },
-  ops: { label: 'Operator' },
 };
 const SIGNAL_FEED_COLUMNS = [
   'signal_type',
@@ -256,333 +247,6 @@ function ConsumerHelp() {
   );
 }
 
-function StatusBadge({ status }) {
-  const badgeClass =
-    status === 'applied' || status === 'active'
-      ? 'badge-success'
-      : status === 'failed' || status === 'rolled_back'
-        ? 'badge-danger'
-        : status === 'proposed' || status === 'needs_review'
-          ? 'badge-warning'
-          : 'badge-neutral';
-  return <span className={`status-badge ${badgeClass}`}>{status}</span>;
-}
-
-function RiskBadge({ level }) {
-  const cls = level === 'high' ? 'badge-danger' : level === 'medium' ? 'badge-warning' : 'badge-success';
-  return <span className={`status-badge ${cls}`}>{level} risk</span>;
-}
-
-function FreshnessBadge({ lastRunAt, lastValidationAt }) {
-  const now = Date.now();
-  const runAge = lastRunAt ? now - new Date(lastRunAt).getTime() : Infinity;
-  const valAge = lastValidationAt ? now - new Date(lastValidationAt).getTime() : Infinity;
-  const staleThresholdMs = 15 * 60 * 1000;
-
-  if (runAge < staleThresholdMs && valAge < staleThresholdMs) {
-    return <span className="freshness-badge freshness-fresh">Live</span>;
-  }
-  if (runAge < 60 * 60 * 1000) {
-    return <span className="freshness-badge freshness-warn">Stale ({Math.round(runAge / 60000)}m ago)</span>;
-  }
-  return <span className="freshness-badge freshness-stale">Stale ({lastRunAt ? formatTimestamp(lastRunAt) : 'never'})</span>;
-}
-
-function SpecSourceBadge({ source }) {
-  if (source === 'bq') {
-    return <span className="spec-source-badge spec-source-managed">Managed Spec</span>;
-  }
-  return <span className="spec-source-badge spec-source-fallback">Fallback Spec</span>;
-}
-
-function ConfirmButton({ label, confirmLabel, onConfirm, disabled, variant }) {
-  const [confirming, setConfirming] = useState(false);
-  const btnClass = variant === 'danger' ? 'btn-danger' : '';
-  if (confirming) {
-    return (
-      <span className="confirm-group">
-        <button className={btnClass} onClick={() => { onConfirm(); setConfirming(false); }} disabled={disabled}>
-          {confirmLabel || 'Confirm'}
-        </button>
-        <button className="btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
-      </span>
-    );
-  }
-  return (
-    <button className={btnClass} onClick={() => setConfirming(true)} disabled={disabled}>
-      {label}
-    </button>
-  );
-}
-
-function OpsPanel({
-  summary,
-  versions,
-  proposals,
-  lastRun,
-  actionLoading,
-  source,
-  apiBase,
-  onRun,
-  onDecision,
-  onApply,
-  onRollback,
-}) {
-  const [filterStatus, setFilterStatus] = useState('all');
-  const pendingReview = summary?.pending_review_count ?? 0;
-  const proposalBacklog = summary?.proposal_backlog ?? 0;
-
-  const filteredProposals = useMemo(() => {
-    if (filterStatus === 'all') return proposals;
-    return proposals.filter((p) => p.status === filterStatus);
-  }, [proposals, filterStatus]);
-
-  return (
-    <section className="ops-layout">
-      {/* Freshness + Source indicators */}
-      <div className="ops-badges-row">
-        <FreshnessBadge
-          lastRunAt={summary?.last_run_at}
-          lastValidationAt={summary?.last_successful_live_validation_at}
-        />
-        <SpecSourceBadge source={source || 'bq'} />
-        {pendingReview > 0 ? (
-          <span className="freshness-badge freshness-warn">{pendingReview} pending review</span>
-        ) : null}
-        {proposalBacklog > 0 ? (
-          <span className="freshness-badge freshness-neutral">{proposalBacklog} in backlog</span>
-        ) : null}
-      </div>
-
-      <section className="tile ops-summary">
-        <header className="tile-header">
-          <h3>Autonomy Summary</h3>
-          <button onClick={onRun} disabled={actionLoading}>
-            {actionLoading ? 'Running...' : 'Run Cycle'}
-          </button>
-        </header>
-        <div className="score-grid">
-          <div className="score-item">
-            <div className="score-label">Active Version</div>
-            <div className="score-value score-mono">{(summary?.latest_active_version_id || summary?.active_version_id || '-').slice(0, 12)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Previous Version</div>
-            <div className="score-value score-mono">{(summary?.previous_version_id || '-').slice(0, 12)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Proposal Backlog</div>
-            <div className={`score-value ${proposalBacklog > 5 ? 'score-warn' : ''}`}>{formatCell(proposalBacklog)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Decided Pending Apply</div>
-            <div className="score-value">{formatCell(summary?.decided_pending_apply ?? 0)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Applied</div>
-            <div className="score-value">{formatCell(summary?.applied_count ?? 0)}</div>
-          </div>
-          <div className="score-item">
-            <div className={`score-label ${(summary?.failed_count ?? 0) > 0 ? 'score-danger-label' : ''}`}>Failed</div>
-            <div className={`score-value ${(summary?.failed_count ?? 0) > 0 ? 'score-danger' : ''}`}>{formatCell(summary?.failed_count ?? 0)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Rejected</div>
-            <div className="score-value">{formatCell(summary?.rejected_count ?? 0)}</div>
-          </div>
-          <div className="score-item">
-            <div className={`score-label ${(summary?.rolled_back_count ?? 0) > 0 ? 'score-danger-label' : ''}`}>Rolled Back</div>
-            <div className={`score-value ${(summary?.rolled_back_count ?? 0) > 0 ? 'score-danger' : ''}`}>{formatCell(summary?.rolled_back_count ?? 0)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Last Run</div>
-            <div className="score-value">{formatTimestamp(summary?.last_run_at)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Last Apply</div>
-            <div className="score-value">{formatTimestamp(summary?.last_applied_at)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Last Rollback</div>
-            <div className="score-value">{formatTimestamp(summary?.last_rollback_at)}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Last Validation</div>
-            <div className="score-value">{formatTimestamp(summary?.last_successful_live_validation_at)}</div>
-          </div>
-        </div>
-        {lastRun ? (
-          <div className={`ops-run-result ${lastRun.status?.includes('rollback') ? 'ops-run-rollback' : lastRun.failed > 0 ? 'ops-run-error' : 'ops-run-ok'}`}>
-            <div className="ops-run-header">
-              <strong>Latest Cycle Result</strong>
-              <StatusBadge status={lastRun.status} />
-            </div>
-            <span>
-              Generated {lastRun.generated} | Decided {lastRun.decided} | Applied {lastRun.applied} | Failed {lastRun.failed}
-            </span>
-            <span className="ops-run-meta">
-              {lastRun.mode} | {lastRun.policy_version} | {lastRun.validation_issues?.length || 0} validation issues
-            </span>
-            {lastRun.errors?.length > 0 ? (
-              <div className="ops-run-errors">
-                {lastRun.errors.slice(0, 3).map((err, i) => (
-                  <div key={`err-${i}`} className="ops-run-error-line">{err}</div>
-                ))}
-              </div>
-            ) : null}
-            {lastRun.messages?.length > 0 ? (
-              <div className="ops-run-messages">
-                {lastRun.messages.slice(0, 5).map((msg, i) => (
-                  <div key={`msg-${i}`} className="ops-run-msg-line">{msg}</div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-      </section>
-
-      <section className="tile ops-summary">
-        <header className="tile-header">
-          <h3>Environment</h3>
-        </header>
-        <div className="score-grid">
-          <div className="score-item">
-            <div className="score-label">API Base</div>
-            <div className="score-value score-mono">{apiBase}</div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Spec Source</div>
-            <div className="score-value"><SpecSourceBadge source={source || 'bq'} /></div>
-          </div>
-          <div className="score-item">
-            <div className="score-label">Pending Review</div>
-            <div className={`score-value ${pendingReview > 0 ? 'score-warn' : ''}`}>{formatCell(pendingReview)}</div>
-          </div>
-        </div>
-      </section>
-
-      <section className="tile">
-        <header className="tile-header">
-          <div>
-            <h3>Governed Proposals</h3>
-            <p className="tile-description">{filteredProposals.length} of {proposals.length} proposals shown</p>
-          </div>
-          <div className="ops-filter-row">
-            {['all', 'proposed', 'decided', 'applied', 'rejected', 'rolled_back', 'failed'].map((s) => (
-              <button
-                key={s}
-                className={`filter-chip ${filterStatus === s ? 'filter-chip-active' : ''}`}
-                onClick={() => setFilterStatus(s)}
-              >
-                {s === 'all' ? 'All' : s.replace('_', ' ')}
-              </button>
-            ))}
-          </div>
-        </header>
-        <div className="proposal-list ops-proposal-list">
-          {filteredProposals.length === 0 ? <div className="tile-loading">No proposals match this filter.</div> : null}
-          {filteredProposals.map((proposal) => (
-            <article className={`proposal proposal-${proposal.payload?.risk_level || proposal.risk_level}`} key={proposal.proposal_id}>
-              <div className="proposal-header-row">
-                <h4>{proposal.payload?.title || proposal.proposal_type}</h4>
-                <div className="proposal-badges">
-                  <StatusBadge status={proposal.status} />
-                  <RiskBadge level={proposal.payload?.risk_level || proposal.risk_level} />
-                </div>
-              </div>
-              <p>{proposal.payload?.details || proposal.rationale}</p>
-              <div className="proposal-meta">
-                <span>{proposal.proposal_type}</span>
-                <span>{proposal.policy_version}</span>
-                <span>{formatTimestamp(proposal.created_at)}</span>
-                <span className="proposal-id-mono">{proposal.proposal_id.slice(0, 8)}</span>
-              </div>
-              {proposal.decision ? (
-                <div className="proposal-decision-box">
-                  <strong>Decision:</strong> {proposal.decision.decision} by {proposal.decision.decided_by}
-                  {proposal.decision.decision_reason ? (
-                    <p className="proposal-note">{proposal.decision.decision_reason}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="proposal-actions">
-                {proposal.status === 'proposed' ? (
-                  <>
-                    <ConfirmButton
-                      label="Approve"
-                      confirmLabel="Confirm Approve"
-                      onConfirm={() => onDecision(proposal.proposal_id, 'approve_manual')}
-                      disabled={actionLoading}
-                    />
-                    <ConfirmButton
-                      label="Reject"
-                      confirmLabel="Confirm Reject"
-                      onConfirm={() => onDecision(proposal.proposal_id, 'reject')}
-                      disabled={actionLoading}
-                      variant="danger"
-                    />
-                  </>
-                ) : null}
-                {proposal.status === 'decided' ? (
-                  <ConfirmButton
-                    label="Apply"
-                    confirmLabel="Confirm Apply"
-                    onConfirm={() => onApply(proposal.proposal_id)}
-                    disabled={actionLoading}
-                  />
-                ) : null}
-                {proposal.status === 'applied' ? (
-                  <ConfirmButton
-                    label="Rollback"
-                    confirmLabel="Confirm Rollback"
-                    onConfirm={() => onRollback(proposal.proposal_id)}
-                    disabled={actionLoading}
-                    variant="danger"
-                  />
-                ) : null}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="tile">
-        <header className="tile-header">
-          <h3>Spec Version History</h3>
-        </header>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Version</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th>By</th>
-                <th>Source Proposal</th>
-                <th>Previous</th>
-                <th>Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {versions.map((v, idx) => (
-                <tr key={v.version_id || idx} className={v.status === 'active' ? 'row-active' : ''}>
-                  <td className="cell-mono">{(v.version_id || '-').slice(0, 12)}</td>
-                  <td><StatusBadge status={v.status} /></td>
-                  <td>{formatTimestamp(v.created_at)}</td>
-                  <td>{v.created_by || '-'}</td>
-                  <td className="cell-mono">{v.source_proposal_id ? v.source_proposal_id.slice(0, 8) : '-'}</td>
-                  <td className="cell-mono">{v.previous_version_id ? v.previous_version_id.slice(0, 12) : '-'}</td>
-                  <td className="cell-notes">{v.notes || '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </section>
-  );
-}
-
 function Tile({ tile, rows, loading, error, onPanelView }) {
   useEffect(() => {
     if (!loading && rows.length > 0) onPanelView(tile.tile_id);
@@ -614,11 +278,6 @@ export default function App() {
   const [tileErrors, setTileErrors] = useState({});
   const [error, setError] = useState('');
   const [proposals, setProposals] = useState([]);
-  const [governanceProposals, setGovernanceProposals] = useState([]);
-  const [governanceSummary, setGovernanceSummary] = useState(null);
-  const [specVersions, setSpecVersions] = useState([]);
-  const [lastAutonomyRun, setLastAutonomyRun] = useState(null);
-  const [opsActionLoading, setOpsActionLoading] = useState(false);
   const [signalFeed, setSignalFeed] = useState([]);
   const [signalFeedLoading, setSignalFeedLoading] = useState(false);
   const [signalFilters, setSignalFilters] = useState({
@@ -678,32 +337,9 @@ export default function App() {
     }
   };
 
-  const loadGovernance = async () => {
-    try {
-      const [summaryRes, proposalRes, versionsRes] = await Promise.all([
-        fetchGovernanceSummary(DASHBOARD_ID),
-        fetchGovernanceProposals(DASHBOARD_ID, 20),
-        fetchSpecVersions(DASHBOARD_ID, 20),
-      ]);
-      setGovernanceSummary(summaryRes);
-      setGovernanceProposals(proposalRes.proposals || []);
-      setSpecVersions(versionsRes.versions || []);
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
   const loadAll = async (role) => {
     setError('');
     try {
-      if (role === 'ops') {
-        setSpec(null);
-        setRowsByTile({});
-        setProposals([]);
-        setSignalFeed([]);
-        await loadGovernance();
-        return;
-      }
       const specRes = await fetchSpec(DASHBOARD_ID, role);
       setSpec(specRes.spec);
       setSource(specRes.source);
@@ -743,7 +379,7 @@ export default function App() {
   }, [activeRole, signalFilters]);
 
   useEffect(() => {
-    if (!spec || activeRole === 'ops') return undefined;
+    if (!spec) return undefined;
     const timer = setInterval(() => {
       loadAll(activeRole);
       if (activeRole === 'analyst') {
@@ -753,15 +389,6 @@ export default function App() {
     }, refreshSeconds * 1000);
     return () => clearInterval(timer);
   }, [spec, refreshSeconds, activeRole, signalFilters]);
-
-  useEffect(() => {
-    if (activeRole !== 'ops') return undefined;
-    const timer = setInterval(() => {
-      loadGovernance();
-      logEvent('ops_auto_refresh');
-    }, 30000);
-    return () => clearInterval(timer);
-  }, [activeRole]);
 
   const sortedProposals = useMemo(
     () => [...proposals].sort((a, b) => (a.priority > b.priority ? -1 : 1)),
@@ -788,89 +415,15 @@ export default function App() {
     logEvent('signal_filter_change', 'signal_feed', { [key]: value });
   };
 
-  const onRunAutonomy = async () => {
-    setOpsActionLoading(true);
-    try {
-      const result = await runAutonomyCycle(DASHBOARD_ID);
-      setLastAutonomyRun(result);
-      await loadGovernance();
-      logEvent('ops_run_cycle');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setOpsActionLoading(false);
-    }
-  };
-
-  const onGovernanceDecision = async (proposalId, decision) => {
-    setOpsActionLoading(true);
-    try {
-      await decideGovernanceProposal(proposalId, {
-        dashboard_id: DASHBOARD_ID,
-        decision,
-        decided_by: 'human_operator',
-        decision_reason: decision === 'reject' ? 'Manual rejection from operator panel.' : 'Manual approval from operator panel.',
-      });
-      await loadGovernance();
-      logEvent('ops_decision', proposalId, { decision });
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setOpsActionLoading(false);
-    }
-  };
-
-  const onApplyProposal = async (proposalId) => {
-    setOpsActionLoading(true);
-    try {
-      await applyProposal({
-        dashboard_id: DASHBOARD_ID,
-        proposal_id: proposalId,
-        activated_by: 'human_operator',
-      });
-      await loadGovernance();
-      logEvent('ops_apply', proposalId);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setOpsActionLoading(false);
-    }
-  };
-
-  const onRollbackProposal = async (proposalId) => {
-    setOpsActionLoading(true);
-    try {
-      await rollbackSpec({
-        dashboard_id: DASHBOARD_ID,
-        proposal_id: proposalId,
-        rollback_reason: 'Manual rollback from operator panel.',
-        rolled_back_by: 'human_operator',
-      });
-      await loadGovernance();
-      logEvent('ops_rollback', proposalId);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setOpsActionLoading(false);
-    }
-  };
-
   return (
     <main className="page">
       <header className="topbar">
         <div>
-          <h1>{activeRole === 'ops' ? 'Kalshi Autonomy Operator Console' : spec?.title || 'Kalshi Autonomous Dashboard'}</h1>
-          <p>
-            {activeRole === 'ops'
-              ? 'Governed proposal queue, active spec versions, and autonomy controls.'
-              : spec?.description || 'Spec-driven dashboard with autonomous proposal lane.'}
-          </p>
+          <h1>{spec?.title || 'Kalshi Autonomous Dashboard'}</h1>
+          <p>{spec?.description || 'Spec-driven dashboard with autonomous proposal lane.'}</p>
           <p className="role-subtitle">Role view: {ROLE_CONFIG[activeRole]?.label || activeRole}</p>
         </div>
         <div className="topbar-actions">
-          {activeRole !== 'ops' ? (
-            <SpecSourceBadge source={source} />
-          ) : null}
           <button
             onClick={() => {
               loadAll(activeRole);
@@ -896,7 +449,7 @@ export default function App() {
 
       {error ? <div className="error">{error}</div> : null}
 
-      {activeRole !== 'consumer' && activeRole !== 'ops' ? (
+      {activeRole !== 'consumer' ? (
         <section className="proposal-strip">
           <h2>Agent Proposals</h2>
           <div className="proposal-list">
@@ -930,36 +483,18 @@ export default function App() {
 
       {activeRole === 'consumer' ? <ConsumerHelp /> : null}
 
-      {activeRole === 'ops' ? (
-        <OpsPanel
-          summary={governanceSummary}
-          versions={specVersions}
-          proposals={governanceProposals}
-          lastRun={lastAutonomyRun}
-          actionLoading={opsActionLoading}
-          source={source}
-          apiBase={API_BASE}
-          onRun={onRunAutonomy}
-          onDecision={onGovernanceDecision}
-          onApply={onApplyProposal}
-          onRollback={onRollbackProposal}
-        />
-      ) : null}
-
-      {activeRole !== 'ops' ? (
-        <section className="tile-grid">
-          {(spec?.tiles || []).map((tile) => (
-            <Tile
-              key={tile.tile_id}
-              tile={tile}
-              rows={rowsByTile[tile.tile_id] || []}
-              loading={!!loadingByTile[tile.tile_id]}
-              error={tileErrors[tile.tile_id]}
-              onPanelView={(panelId) => logEvent('panel_view', panelId)}
-            />
-          ))}
-        </section>
-      ) : null}
+      <section className="tile-grid">
+        {(spec?.tiles || []).map((tile) => (
+          <Tile
+            key={tile.tile_id}
+            tile={tile}
+            rows={rowsByTile[tile.tile_id] || []}
+            loading={!!loadingByTile[tile.tile_id]}
+            error={tileErrors[tile.tile_id]}
+            onPanelView={(panelId) => logEvent('panel_view', panelId)}
+          />
+        ))}
+      </section>
     </main>
   );
 }

@@ -13,7 +13,6 @@ SQL_GROUPS = {
     "kalshi-core": [
         "002_kalshi_baseline_tables.sql",
         "004_kalshi_dashboard_views.sql",
-        "006_kalshi_autonomy_app_tables.sql",
         "007_kalshi_ds_views.sql",
         "008_kalshi_event_ingestion_tables.sql",
     ],

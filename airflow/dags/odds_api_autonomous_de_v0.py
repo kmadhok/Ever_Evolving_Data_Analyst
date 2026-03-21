@@ -595,69 +595,12 @@ with DAG(
 
     def _branch_quality_gate(ti, **_: Any) -> str:
         quality = ti.xcom_pull(task_ids="run_quality_gates")
-        return "propose_schema_changes" if quality.get("status") == "PASS" else "stop_noop"
+        return "publish_core_tables" if quality.get("status") == "PASS" else "stop_noop"
 
     quality_branch = BranchPythonOperator(
         task_id="quality_branch",
         python_callable=_branch_quality_gate,
     )
-
-    @task(task_id="propose_schema_changes")
-    def propose_schema_changes() -> dict[str, Any]:
-        proposal = {
-            "proposal_id": str(uuid.uuid4()),
-            "status": "NO_CHANGE",
-            "risk_level": "low",
-            "target": f"{BQ_PROJECT}.{BQ_DATASET_STG}.odds_prices_stg",
-            "proposed_at": _utcnow_iso(),
-        }
-        _insert_rows(
-            BQ_DATASET_OPS,
-            "schema_change_proposals",
-            [
-                {
-                    "proposal_id": proposal["proposal_id"],
-                    "proposed_at": proposal["proposed_at"],
-                    "proposed_by": "odds_api_autonomous_de_v0",
-                    "target_dataset": BQ_DATASET_STG,
-                    "target_table": "odds_prices_stg",
-                    "change_type": "no_change",
-                    "change_sql": "-- governed schema change lane recorded no actionable diff for this run",
-                    "risk_level": proposal["risk_level"],
-                    "rationale": "Schema automation is bounded to proposal generation only in beta.",
-                    "source_doc_hash": None,
-                    "status": proposal["status"],
-                }
-            ],
-        )
-        return proposal
-
-    def _branch_policy_gate(ti, **_: Any) -> str:
-        proposal = ti.xcom_pull(task_ids="propose_schema_changes")
-        if proposal.get("status") == "NO_CHANGE":
-            return "skip_schema_apply"
-        risk = proposal.get("risk_level", "high").lower()
-        return "apply_schema_change" if risk == "low" else "skip_schema_apply"
-
-    policy_branch = BranchPythonOperator(
-        task_id="policy_branch",
-        python_callable=_branch_policy_gate,
-    )
-
-    @task(task_id="apply_schema_change")
-    def apply_schema_change(proposal: dict[str, Any]) -> dict[str, Any]:
-        decision = {
-            "proposal_id": proposal["proposal_id"],
-            "decided_at": _utcnow_iso(),
-            "decision": "deferred_manual_review",
-            "decision_reason": "Beta mode records schema changes for review but does not auto-apply DDL.",
-            "decided_by": "system",
-            "applied_job_id": None,
-        }
-        _insert_rows(BQ_DATASET_OPS, "schema_change_decisions", [decision])
-        return {"apply_status": "deferred_manual_review", "applied_at": decision["decided_at"]}
-
-    skip_schema_apply = EmptyOperator(task_id="skip_schema_apply")
 
     @task(task_id="publish_core_tables")
     def publish_core_tables() -> dict[str, Any]:
@@ -760,8 +703,6 @@ with DAG(
     raw = persist_raw_payloads(usage, plan, odds, scores)
     stg = build_staging(raw)
     quality = run_quality_gates(stg)
-    proposal = propose_schema_changes()
-    applied = apply_schema_change(proposal)
     published = publish_core_tables()
     kpi = compute_kpis(published)
     run_summary = emit_run_summary(kpi, plan)
@@ -771,7 +712,4 @@ with DAG(
     budget_branch >> [odds, scores]
     [odds, scores] >> raw >> stg >> quality >> quality_branch
     quality_branch >> stop_noop
-    quality_branch >> proposal >> policy_branch
-    policy_branch >> skip_schema_apply >> published
-    policy_branch >> applied >> published
-    published >> kpi >> run_summary >> end
+    quality_branch >> published >> kpi >> run_summary >> end
