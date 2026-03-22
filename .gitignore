@@ -22,3 +22,7 @@ apps/ui/dist/
 apps/api/.venv/
 .claude/
 kalshi_private_key.pem
+
+# OS / editor junk
+.DS_Store
+*.zip
