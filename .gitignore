@@ -6,6 +6,7 @@
 
 # Local service-account keys
 credentials*.json
+*.pem
 
 # Airflow local state
 airflow/logs/

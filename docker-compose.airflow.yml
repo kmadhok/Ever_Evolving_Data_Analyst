@@ -71,6 +71,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./airflow/config:/opt/airflow/config
       - ${GOOGLE_APPLICATION_CREDENTIALS_HOST:-./credentials_brainrot.json}:/opt/airflow/keys/credentials.json:ro
+      - ${KALSHI_PRIVATE_KEY_HOST:-./kalshi_private_key.pem}:/opt/airflow/keys/kalshi_private_key.pem:ro
 
   airflow-webserver:
     image: apache/airflow:2.10.3-python3.11

@@ -20,6 +20,9 @@ SQL_GROUPS = {
         "009_kalshi_market_intelligence_signals.sql",
         "010_kalshi_signal_reporting_tables.sql",
     ],
+    "kalshi-ws": [
+        "011_kalshi_ws_tables.sql",
+    ],
     "odds-core": [
         "001_baseline_tables.sql",
     ],
@@ -31,14 +34,22 @@ def load_sql(path: Path, project_id: str) -> str:
     return text.replace("YOUR_PROJECT_ID", project_id).replace("brainrot-453319", project_id)
 
 
+def _split_statements(sql: str) -> list[str]:
+    """Split a SQL file into individual statements on semicolons."""
+    stmts = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
+    return stmts
+
+
 def apply_group(project_id: str, group: str, dry_run: bool) -> None:
     client = bigquery.Client(project=project_id)
     for filename in SQL_GROUPS[group]:
         path = SQL_DIR / filename
         sql = load_sql(path, project_id)
-        print(f"Applying {filename} to {project_id}")
-        job = client.query(sql, job_config=bigquery.QueryJobConfig(dry_run=dry_run, use_query_cache=False))
-        job.result()
+        statements = _split_statements(sql)
+        for i, stmt in enumerate(statements, 1):
+            print(f"Applying {filename} statement {i}/{len(statements)} to {project_id}")
+            job = client.query(stmt, job_config=bigquery.QueryJobConfig(dry_run=dry_run, use_query_cache=False))
+            job.result()
 
 
 def build_parser() -> argparse.ArgumentParser:
