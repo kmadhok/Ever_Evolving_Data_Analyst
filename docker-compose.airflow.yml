@@ -28,7 +28,7 @@ services:
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
       AIRFLOW__CORE__DEFAULT_TIMEZONE: UTC
-      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-google-cloud-bigquery==3.25.0}
+      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-google-cloud-bigquery==3.25.0 websocket-client==1.8.0 cryptography==44.0.0}
       BQ_PROJECT: ${BQ_PROJECT}
       BQ_DATASET_RAW: ${BQ_DATASET_RAW:-kalshi_raw}
       BQ_DATASET_STG: ${BQ_DATASET_STG:-kalshi_stg}
@@ -52,6 +52,13 @@ services:
       QUALITY_MAX_FRESHNESS_MINUTES: ${QUALITY_MAX_FRESHNESS_MINUTES:-15}
       QUALITY_MAX_NULL_MARKET_TICKER_RATIO: ${QUALITY_MAX_NULL_MARKET_TICKER_RATIO:-0.01}
       QUALITY_MAX_DUPLICATE_TRADE_ID_RATIO: ${QUALITY_MAX_DUPLICATE_TRADE_ID_RATIO:-0.01}
+      KALSHI_API_KEY: ${KALSHI_API_KEY:-}
+      KALSHI_API_SECRET: ${KALSHI_API_SECRET:-}
+      KALSHI_WS_ENDPOINT: ${KALSHI_WS_ENDPOINT:-wss://api.elections.kalshi.com/trade-api/ws/v2}
+      KALSHI_WS_LISTEN_SECONDS: ${KALSHI_WS_LISTEN_SECONDS:-240}
+      KALSHI_WS_MAX_MARKETS: ${KALSHI_WS_MAX_MARKETS:-25}
+      KALSHI_WS_RECONNECT_DELAY_SECONDS: ${KALSHI_WS_RECONNECT_DELAY_SECONDS:-2}
+      KALSHI_WS_MAX_RECONNECTS: ${KALSHI_WS_MAX_RECONNECTS:-3}
       GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/keys/credentials.json
     command: >
       bash -c "
@@ -64,6 +71,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./airflow/config:/opt/airflow/config
       - ${GOOGLE_APPLICATION_CREDENTIALS_HOST:-./credentials_brainrot.json}:/opt/airflow/keys/credentials.json:ro
+      - ${KALSHI_PRIVATE_KEY_HOST:-./kalshi_private_key.pem}:/opt/airflow/keys/kalshi_private_key.pem:ro
 
   airflow-webserver:
     image: apache/airflow:2.10.3-python3.11

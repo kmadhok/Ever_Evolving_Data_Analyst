@@ -56,5 +56,14 @@ airflow-trigger-kalshi:
 airflow-trigger-odds:
 	./scripts/trigger_airflow_dag.sh odds_api_autonomous_de_v0
 
+bq-apply-kalshi-ws:
+	./apps/api/.venv/bin/python ./scripts/apply_bigquery_sql.py --project-id $(PROJECT_ID) --group kalshi-ws
+
+airflow-trigger-kalshi-ws:
+	./scripts/trigger_airflow_dag.sh kalshi_ws_realtime_v0
+
+airflow-unpause-kalshi-ws:
+	docker compose --env-file $(ENV_FILE) -f docker-compose.airflow.yml exec airflow-webserver airflow dags unpause kalshi_ws_realtime_v0
+
 env-check:
 	./scripts/env_check.sh
