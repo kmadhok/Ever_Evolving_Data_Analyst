@@ -18,7 +18,7 @@ airflow-ps:
 	docker compose --env-file $(ENV_FILE) -f docker-compose.airflow.yml ps
 
 api-setup:
-	cd apps/api && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+	cd apps/api && python3 -m venv --clear .venv && . .venv/bin/activate && pip install -r requirements.txt
 
 api-dev:
 	cd apps/api && . .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -67,3 +67,9 @@ airflow-unpause-kalshi-ws:
 
 env-check:
 	./scripts/env_check.sh
+
+scheduler-smoke:
+	./scripts/scheduler_smoke_check.sh
+
+scheduler-install:
+	./scripts/install_scheduler_service.sh

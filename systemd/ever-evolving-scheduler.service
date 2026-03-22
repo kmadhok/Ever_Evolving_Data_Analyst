@@ -1,0 +1,20 @@
+# Reference unit file. The installer script renders a machine-specific copy
+# into /etc/systemd/system using the current checkout path, user, and
+# credential-related environment variables.
+[Unit]
+Description=Ever Evolving Software Scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/Ever_Evolving_Software
+Environment=GOOGLE_APPLICATION_CREDENTIALS=/path/to/Ever_Evolving_Software/credentials_brainrot.json
+Environment=KALSHI_PRIVATE_KEY_PATH=/path/to/Ever_Evolving_Software/kalshi_private_key.pem
+ExecStart=/path/to/Ever_Evolving_Software/scripts/run_scheduler.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

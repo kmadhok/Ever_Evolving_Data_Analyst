@@ -6,12 +6,17 @@ Live-operable beta workspace for:
 - FastAPI governance services for dashboard spec autonomy
 - React role-based dashboards and operator console
 
+Primary local execution path:
+- `scripts/scheduler.py` runs the standalone ingestion scripts on a schedule
+- `systemd` is the recommended way to keep that scheduler running on Linux
+- Airflow DAGs remain in-repo for reference and legacy local workflows
+
 ## What Lives Here
 
 - `airflow/dags/kalshi_market_data_autonomous_de_v0.py`
-  Primary Kalshi ingestion DAG. Persists raw/staging/core data, quality results, signal runs, market-intelligence reports, and governed schema-review records.
+  Legacy/reference Kalshi ingestion DAG. The standalone scheduler is now the primary execution path.
 - `airflow/dags/odds_api_autonomous_de_v0.py`
-  Companion Odds API DAG. Persists budget decisions, raw payloads, staging/core tables, quality results, schema-review records, and run summaries.
+  Legacy/reference Odds API DAG. The standalone scheduler is now the primary execution path.
 - `apps/api`
   FastAPI backend for spec serving, usage logging, proposal generation, governance decisions, apply, rollback, CLI operations, and live validation.
 - `apps/ui`
@@ -19,18 +24,15 @@ Live-operable beta workspace for:
 - `sql/bigquery`
   Ordered SQL source of truth for datasets, tables, views, and reporting assets.
 - `scripts`
-  Repo-level helpers for env checks, BigQuery apply flows, live validation, and local Airflow DAG triggers.
+  Repo-level helpers for env checks, scheduler install/smoke checks, BigQuery apply flows, live validation, and legacy Airflow triggers.
 
 ## Quick Start
 
 ### 1. Backend
 
 ```bash
-cd /Users/kanumadhok/Downloads/code/Ever_Evolving_Software/apps/api
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
+cd /path/to/Ever_Evolving_Software
+make api-setup
 ```
 
 Run the local backend:
@@ -48,7 +50,7 @@ make api-test-unit
 ### 2. Frontend
 
 ```bash
-cd /Users/kanumadhok/Downloads/code/Ever_Evolving_Software/apps/ui
+cd /path/to/Ever_Evolving_Software/apps/ui
 npm install
 ```
 
@@ -66,7 +68,31 @@ make ui-build
 make ui-e2e
 ```
 
-### 3. Repo-Level Checks
+### 3. Scheduler
+
+Run the scheduler directly:
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=./credentials_brainrot.json \
+KALSHI_PRIVATE_KEY_PATH=./kalshi_private_key.pem \
+  ./scripts/run_scheduler.sh
+```
+
+Install it as a Linux `systemd` service:
+
+```bash
+make scheduler-smoke
+make scheduler-install
+```
+
+Monitor it:
+
+```bash
+sudo systemctl status ever-evolving-scheduler --no-pager
+journalctl -u ever-evolving-scheduler -f
+```
+
+### 4. Repo-Level Checks
 
 ```bash
 make env-check
@@ -77,7 +103,7 @@ This checks:
 - Node.js availability
 - npm availability
 
-### 4. BigQuery SQL Apply
+### 5. BigQuery SQL Apply
 
 Apply SQL groups in order:
 
@@ -93,7 +119,7 @@ Run live BigQuery smoke validation:
 make api-test-live DASHBOARD_ID=kalshi_autonomous_v1
 ```
 
-### 5. Airflow
+### 6. Airflow (Legacy / Optional)
 
 ```bash
 make airflow-init
@@ -104,6 +130,10 @@ make airflow-trigger-odds
 
 ## Key Commands
 
+- `make scheduler-smoke`
+  Verifies the local scheduler runtime: venv interpreter, direct Python imports, scheduler module import, and credential/key paths.
+- `make scheduler-install`
+  Installs and enables a machine-specific `systemd` unit for the scheduler on Linux.
 - `make api-test-unit`
   Runs backend `unittest` coverage for policy, diffing, apply/rollback, CLI, and live-validation helpers.
 - `make api-test-live`
@@ -163,6 +193,8 @@ The operator console shows:
 
 - `docs/commands_and_scripts.md`
   Inventory of every Make target, helper script, CLI command, and test entrypoint.
+- `docs/scheduler_linux_runbook.md`
+  Linux `systemd` install, verification, and troubleshooting guide for the standalone scheduler.
 - `docs/local_and_live_validation.md`
   Exact local checks versus live-environment checks.
 - `docs/environment_model.md`
@@ -178,4 +210,4 @@ The operator console shows:
 
 - Live BigQuery correctness still depends on your real datasets, permissions, and upstream freshness.
 - External API quota behavior is instrumented and bounded in code, but actual Kalshi/Odds provider behavior still needs live observation.
-- The backend currently runs under the existing local Python 3.9 environment, which emits upstream deprecation warnings. The repo still works, but upgrading the runtime is recommended.
+- The scheduler and scripts assume a machine-local venv in `apps/api/.venv`; copied venvs from another OS are not portable.
