@@ -81,31 +81,129 @@ docker compose -f docker-compose.airflow.yml logs -f airflow-scheduler
 | `kalshi_ops` | Operational metadata (quality, connection logs, etc.) |
 | `odds_raw` / `odds_stg` / `odds_core` / `odds_ops` | Odds API pipeline |
 
-## WebSocket DAG (`kalshi_ws_realtime_v0`)
+## WebSocket DAG (`kalshi_ws_realtime_v0`) — Deep Dive
 
-**Task flow:** `resolve_top_markets` → `open_ws_session` → `persist_raw` → `build_ws_staging` → `log_ws_connection`
+### Why This Exists
 
-**What it does:**
-1. Queries `kalshi_core.market_state_core` for top-N markets by volume
-2. Connects to `wss://api.elections.kalshi.com/trade-api/ws/v2` with RSA-PSS auth
-3. Subscribes to `ticker`, `trade`, `orderbook_delta` channels
-4. Listens for 240 seconds (configurable), collects messages in-memory
-5. Inserts raw messages to `kalshi_raw.ws_{trades,ticker,orderbook_snapshots}_raw`
-6. Transforms raw → staging: `kalshi_stg.ws_{trades,ticker}_stg`
-7. Logs session to `kalshi_ops.ws_connection_log`
+The REST DAG polls Kalshi every 5 minutes, which means trades and price movements between polls are only seen after the fact. The WebSocket DAG complements this by opening a persistent connection to Kalshi's streaming API, capturing **sub-second trade and price data** as it happens. This gives us:
 
-**Key env vars:**
+- **Real-time trade capture** — every individual trade with exact timestamp, price, size, and side
+- **Live price/volume/OI snapshots** — ticker updates pushed by the exchange whenever state changes
+- **Orderbook deltas** — bid/ask level changes as they happen (raw capture only in v0)
+- **Overlap with REST** — both DAGs run on 5-min schedules; REST gives us the full market catalog and historical backfill, WS gives us the granular intra-interval activity
+
+### How It Works (Task-by-Task)
+
+**File:** `airflow/dags/kalshi_ws_realtime_v0.py` (~620 lines)
+**Schedule:** `*/5 * * * *` (every 5 minutes), `max_active_runs=1`, `catchup=False`
+
 ```
-KALSHI_API_KEY              # API key ID
-KALSHI_API_SECRET           # Path to RSA PEM (in container: /opt/airflow/keys/kalshi_private_key.pem)
-KALSHI_WS_ENDPOINT          # wss://api.elections.kalshi.com/trade-api/ws/v2
-KALSHI_WS_LISTEN_SECONDS    # Default 240
-KALSHI_WS_MAX_MARKETS       # Default 25
-KALSHI_WS_RECONNECT_DELAY_SECONDS  # Default 2
+start → resolve_top_markets → open_ws_session → persist_raw → build_ws_staging → log_ws_connection → end
+```
+
+#### Task 1: `resolve_top_markets`
+Determines which markets to subscribe to. Queries `kalshi_core.market_state_core` for the top-N open markets ranked by `volume_dollars DESC` (N defaults to 25 via `KALSHI_WS_MAX_MARKETS`). Falls back to `kalshi_stg.market_snapshots_stg` if the core table is empty or errors. **Fails hard if no markets are found** — this means the REST DAG hasn't run yet.
+
+#### Task 2: `open_ws_session` (the core logic)
+This is the main task — it opens an authenticated WebSocket connection, subscribes to channels, and streams messages for a fixed window.
+
+1. **Auth** — Loads RSA private key from `KALSHI_API_SECRET` (PEM file path). Signs `{timestamp_ms}GET/trade-api/ws/v2` with RSA-PSS SHA256. Sends three headers: `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE`.
+
+2. **Connect** — Uses `websocket-client` library (`websocket.create_connection`) to open a connection to `wss://api.elections.kalshi.com/trade-api/ws/v2` with auth headers in the handshake.
+
+3. **Subscribe** — Sends two subscription commands:
+   - `channels: ["ticker", "trade"]` with the resolved market tickers
+   - `channels: ["orderbook_delta"]` with the same tickers
+
+4. **Listen** — Collects messages into three in-memory lists (trades, tickers, orderbooks) for `KALSHI_WS_LISTEN_SECONDS` (default 240s = 4 minutes). Each message gets tagged with `received_at` timestamp and the session's `run_id` (UUID). Uses a 15-second recv timeout with retry so it can check the remaining time window.
+
+5. **Reconnect** — On disconnect/error, retries up to `KALSHI_WS_MAX_RECONNECTS` (default 3) with `KALSHI_WS_RECONNECT_DELAY_SECONDS * attempt` backoff. Re-subscribes on each reconnect.
+
+6. **Returns** — A dict with `trades`, `tickers`, `orderbooks` lists and `session_meta` (timestamps, message counts, reconnect count, errors).
+
+**Message routing logic:**
+| WS `type` field | Routed to | Key fields extracted |
+|-----------------|-----------|---------------------|
+| `trade` | trades list | trade_id, market_ticker, yes/no_price_dollars, count_fp, taker_side, ts |
+| `ticker` | tickers list | market_ticker, price_dollars, yes_bid/ask_dollars, volume_fp, open_interest_fp, ts |
+| `orderbook_delta` / `orderbook_snapshot` | orderbooks list | market_ticker, seq, snapshot_type (delta vs snapshot), full payload |
+| anything else (`subscribed`, `ok`, `error`, heartbeat) | silently ignored | — |
+
+#### Task 3: `persist_raw`
+Inserts the collected messages into BigQuery raw tables via streaming inserts (`insert_rows_json`):
+- `kalshi_raw.ws_trades_raw` — one row per trade message
+- `kalshi_raw.ws_ticker_raw` — one row per ticker update
+- `kalshi_raw.ws_orderbook_snapshots_raw` — one row per orderbook delta/snapshot
+
+All raw tables store prices as STRING (raw from API) and keep the full `api_payload` JSON.
+
+#### Task 4: `build_ws_staging`
+Runs SQL to transform raw → staging for the current `run_id`:
+- **`kalshi_stg.ws_trades_stg`** — SAFE_CASTs price/count to NUMERIC, parses `ts` (unix epoch) → TIMESTAMP, deduplicates by `trade_id` (keeps earliest `received_at` via `QUALIFY ROW_NUMBER()`)
+- **`kalshi_stg.ws_ticker_stg`** — SAFE_CASTs all numeric fields, parses timestamp
+- No staging for orderbook deltas in v0 (raw capture only)
+
+#### Task 5: `log_ws_connection`
+Writes one summary row to `kalshi_ops.ws_connection_log` with: run_id, connected/disconnected timestamps, listen duration, markets subscribed, channels, message counts by type, reconnect count, and any error message.
+
+### BigQuery Tables (DDL in `sql/bigquery/011_kalshi_ws_tables.sql`)
+
+**RAW layer** (append-only, STRING prices, full JSON payload):
+
+| Table | Partition | Cluster | Key columns |
+|-------|-----------|---------|-------------|
+| `kalshi_raw.ws_trades_raw` | `ingestion_date` | `market_ticker` | run_id, trade_id, market_ticker, yes/no_price_dollars, count_fp, taker_side, ts, api_payload, received_at |
+| `kalshi_raw.ws_ticker_raw` | `ingestion_date` | `market_ticker` | run_id, market_ticker, price_dollars, yes/no_bid/ask_dollars, volume_fp, open_interest_fp, ts, api_payload, received_at |
+| `kalshi_raw.ws_orderbook_snapshots_raw` | `ingestion_date` | `market_ticker` | run_id, seq, market_ticker, snapshot_type, api_payload, received_at |
+
+**STG layer** (typed NUMERIC prices, deduplicated trades):
+
+| Table | Partition | Cluster | Key columns |
+|-------|-----------|---------|-------------|
+| `kalshi_stg.ws_trades_stg` | `ingestion_date` | `market_ticker` | trade_id, market_ticker, yes/no_price_dollars (NUMERIC), count_contracts (NUMERIC), taker_side, created_time (TIMESTAMP), source_run_id |
+| `kalshi_stg.ws_ticker_stg` | `ingestion_date` | `market_ticker` | market_ticker, price_dollars, yes_bid/ask_dollars, volume_dollars, open_interest_dollars (all NUMERIC), snapshot_ts (TIMESTAMP), source_run_id |
+
+**OPS layer:**
+
+| Table | Partition | Cluster | Purpose |
+|-------|-----------|---------|---------|
+| `kalshi_ops.ws_connection_log` | `ingestion_date` | `channels` | One row per DAG run — session summary with timing, message counts, errors |
+
+### Key Env Vars
+
+```
+KALSHI_API_KEY              # API key ID (required)
+KALSHI_API_SECRET           # Path to RSA PEM file (in container: /opt/airflow/keys/kalshi_private_key.pem)
+KALSHI_WS_ENDPOINT          # Default: wss://api.elections.kalshi.com/trade-api/ws/v2
+KALSHI_WS_LISTEN_SECONDS    # Default 240 (4 min listen window within 5-min schedule)
+KALSHI_WS_MAX_MARKETS       # Default 25 (top N markets by volume to subscribe)
+KALSHI_WS_RECONNECT_DELAY_SECONDS  # Default 2 (multiplied by attempt number)
 KALSHI_WS_MAX_RECONNECTS    # Default 3
 ```
 
-**Auth:** RSA-PSS SHA256 signature over `{timestamp_ms}GET/trade-api/ws/v2`
+### Auth Details
+
+RSA-PSS SHA256 signature. The signed message is `{timestamp_ms}GET/trade-api/ws/v2` (concatenated, no separators). The PEM private key is loaded from the path in `KALSHI_API_SECRET`. The signature is base64-encoded and sent in the `KALSHI-ACCESS-SIGNATURE` header during the WebSocket handshake.
+
+### Relationship to REST DAG
+
+| Aspect | REST DAG | WebSocket DAG |
+|--------|----------|---------------|
+| Schedule | Every 5 min | Every 5 min |
+| Data freshness | Up to 5 min stale | Sub-second |
+| Coverage | All markets (paginated) | Top 25 by volume |
+| Trade capture | Batch via `/trades` endpoint | Individual as they happen |
+| Orderbook | Full snapshot via `/orderbook` | Deltas as they change |
+| Price data | Snapshot at poll time | Every ticker update |
+| Pipeline depth | raw → stg → core → dash → signal | raw → stg (core merge TBD) |
+
+### What v0 Does NOT Include (Future Work)
+
+- **Orderbook reconstruction** from deltas (v0 captures raw deltas only)
+- **REST + WS trade deduplication** in the core layer (needs reconciliation logic)
+- **Core layer merge** for WS data (ws_trades_stg → trade_prints_core)
+- **Live push to dashboard** (SSE/WebSocket from FastAPI → React)
+- **Signal generation** from WS data (reuse existing signal views once WS feeds core)
 
 ## REST DAG (`kalshi_market_data_autonomous_de_v0`)
 
