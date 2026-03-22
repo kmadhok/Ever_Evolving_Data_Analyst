@@ -3,11 +3,13 @@
 .env.*
 !.env.kalshi.local.example
 !.env.airflow.local.example
-
+.env.airflow.local.example
+.env.kalshi.local.example
+.env.airflow.local
 # Local service-account keys
 credentials*.json
 *.pem
-
+WebSockets.txt
 # Airflow local state
 airflow/logs/
 airflow/config/
@@ -18,3 +20,5 @@ __pycache__/
 apps/ui/node_modules/
 apps/ui/dist/
 apps/api/.venv/
+.claude/
+kalshi_private_key.pem
