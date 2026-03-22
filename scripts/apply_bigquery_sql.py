@@ -34,9 +34,21 @@ def load_sql(path: Path, project_id: str) -> str:
     return text.replace("YOUR_PROJECT_ID", project_id).replace("brainrot-453319", project_id)
 
 
+def _strip_leading_comments(stmt: str) -> str:
+    """Remove leading SQL comment lines and blank lines from a statement."""
+    lines = stmt.splitlines()
+    while lines and (not lines[0].strip() or lines[0].strip().startswith("--")):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
 def _split_statements(sql: str) -> list[str]:
     """Split a SQL file into individual statements on semicolons."""
-    stmts = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
+    stmts = []
+    for raw in sql.split(";"):
+        cleaned = _strip_leading_comments(raw.strip())
+        if cleaned:
+            stmts.append(cleaned)
     return stmts
 
 
